@@ -102,7 +102,7 @@ extension IMAPConnection {
         channel: Channel,
         promise: EventLoopPromise<[Capability]>
     ) -> Scheduled<Void> {
-        let authenticationTimeoutSeconds = 10
+        let authenticationTimeoutSeconds = timeout(10)
         let logger = self.logger
         return channel.eventLoop.scheduleTask(in: .seconds(Int64(authenticationTimeoutSeconds))) {
             logger.warning("PLAIN authentication timed out after \(authenticationTimeoutSeconds) seconds")
@@ -309,7 +309,7 @@ extension IMAPConnection {
         channel: Channel,
         promise: EventLoopPromise<[Capability]>
     ) -> Scheduled<Void> {
-        let authenticationTimeoutSeconds = 10
+        let authenticationTimeoutSeconds = timeout(10)
         let logger = self.logger
         // Schedule on the channel event loop to avoid cross-loop promise completion.
         return channel.eventLoop.scheduleTask(in: .seconds(Int64(authenticationTimeoutSeconds))) {

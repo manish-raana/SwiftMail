@@ -147,7 +147,7 @@ extension IMAPConnection {
         do {
             try await channel.pipeline.addHandler(handler, position: .before(responseBuffer)).get()
             responseBuffer.hasActiveHandler = true
-            let timeoutSeconds = command.timeoutSeconds
+            let timeoutSeconds = timeout(command.timeoutSeconds)
             let logger = self.logger
             try await command.send(on: channel, tag: tag) { lastWrite in
                 Self.armCommandTimeout(
@@ -215,7 +215,7 @@ extension IMAPConnection {
         let handler = HandlerType.init(commandTag: "", promise: resultPromise)
         let scheduledTask = scheduleHandlerTimeout(
             channel: channel,
-            timeoutSeconds: timeoutSeconds,
+            timeoutSeconds: timeout(timeoutSeconds),
             promise: resultPromise
         )
 

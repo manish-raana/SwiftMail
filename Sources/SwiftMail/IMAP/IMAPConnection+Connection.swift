@@ -117,7 +117,7 @@ extension IMAPConnection {
         greetingPromise: EventLoopPromise<[Capability]>,
         greetingHandler: IMAPGreetingHandler
     ) async throws -> [Capability] {
-        let timeoutTask = group.next().scheduleTask(in: .seconds(5)) {
+        let timeoutTask = group.next().scheduleTask(in: .seconds(Int64(timeout(5)))) {
             greetingPromise.fail(IMAPError.timeout)
         }
 
