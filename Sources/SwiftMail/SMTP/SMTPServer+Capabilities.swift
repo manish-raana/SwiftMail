@@ -26,15 +26,13 @@ extension SMTPServer {
 
     @discardableResult
     func fetchCapabilities(holding permit: SMTPOperationGate.Permit) async throws -> [String] {
-        let command = EHLOCommand(clientIdentity: clientIdentity)
+        let command = EHLOCommand(
+            clientIdentity: clientIdentity,
+            timeoutSeconds: SMTPConnectionTimeouts.wholeSeconds(connectionTimeouts.ehloResponse)
+        )
 
         do {
-            let response = try await executeCommand(
-                command,
-                holding: permit,
-                responseTimeout: connectionTimeouts.ehloResponse,
-                timeoutReason: "EHLO timeout"
-            )
+            let response = try await executeCommand(command, holding: permit)
 
             // Parse the capabilities from the raw response
             let capabilities = parseCapabilities(from: response)

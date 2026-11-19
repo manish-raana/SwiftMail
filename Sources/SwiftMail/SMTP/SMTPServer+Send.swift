@@ -315,13 +315,13 @@ extension SMTPServer {
         // even though a reply arrived, it did not prove that the server
         // accepted or rejected the completed message.
         if sendError.acceptance == .ambiguous {
-            await closeAndClearChannel(holding: permit)
+            await closeConnectionAfterFailedSubmission(holding: permit)
             return sendError
         }
 
         switch sendError.reason {
             case .reply(let response) where response.code == 421:
-                await closeAndClearChannel(holding: permit)
+                await closeConnectionAfterFailedSubmission(holding: permit)
             case .reply where sendError.phase == .content:
                 break
             case .reply:
@@ -329,13 +329,34 @@ extension SMTPServer {
                     _ = try await executeCommand(RsetCommand(), holding: permit)
                 } catch {
                     logger.warning("RSET after rejected transaction failed: \(error)")
-                    await closeAndClearChannel(holding: permit)
+                    await closeConnectionAfterFailedSubmission(holding: permit)
                 }
             case .cancelled, .timedOut, .connectionLost, .transport:
-                await closeAndClearChannel(holding: permit)
+                await closeConnectionAfterFailedSubmission(holding: permit)
         }
 
         return sendError
+    }
+
+    /// Close and clear the channel after a submission failure that leaves the
+    /// session unusable. A later ``connect()`` starts a fresh session.
+    private func closeConnectionAfterFailedSubmission(
+        holding permit: SMTPOperationGate.Permit
+    ) async {
+        precondition(operationGate.isHeld(permit), "SMTP channel closed without owning it")
+        guard let channel = self.channel else {
+            return
+        }
+
+        self.channel = nil
+        self.isTLSEnabled = false
+        self.capabilities = []
+
+        do {
+            try await channel.close().get()
+        } catch {
+            logger.debug("Channel close after failed submission reported: \(error)")
+        }
     }
 
     static func prepareEmailForSend(_ email: Email, capabilities: [String]) throws -> PreparedEmailForSend {

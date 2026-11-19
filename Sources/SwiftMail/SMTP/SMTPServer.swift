@@ -228,25 +228,18 @@ public actor SMTPServer {
      3. Managing command timeouts
      4. Handling command-specific requirements (e.g., LOGIN auth)
 
-     - Parameters:
-       - command: The command to execute
-       - permit: The operation-gate permit that owns the channel
-       - responseTimeout: Overrides the command's `timeoutSeconds`, in seconds
-       - timeoutReason: The `SMTPError.connectionFailed` reason when the timeout expires
+     - Parameter command: The command to execute
      - Returns: The result of the command execution
      - Throws:
        - `SMTPError.connectionFailed` if not connected
        - `SMTPError.commandFailed` if the command execution fails
-       - `SMTPError.connectionFailed` with `timeoutReason` if the command times out
-       - `CancellationError` if the task is cancelled; the connection is then closed
+       - `SMTPError.timeout` if the command times out
      - Note: Logs command execution at debug level
      */
     @discardableResult
     func executeCommand<CommandType: SMTPCommand>(
         _ command: CommandType,
-        holding permit: SMTPOperationGate.Permit,
-        responseTimeout: TimeInterval? = nil,
-        timeoutReason: String = "Response timeout"
+        holding permit: SMTPOperationGate.Permit
     ) async throws -> CommandType.ResultType {
         precondition(operationGate.isHeld(permit), "SMTP command executed without owning the channel")
 
@@ -262,9 +255,8 @@ public actor SMTPServer {
         let commandData = command.toCommandData()
         let handler = makeCommandHandler(for: command, commandTag: commandTag, resultPromise: resultPromise)
 
-        let timeout = responseTimeout ?? TimeInterval(command.timeoutSeconds)
-        let scheduledTask = group.next().scheduleTask(in: Self.nioTimeAmount(seconds: timeout)) {
-            resultPromise.fail(SMTPError.connectionFailed(timeoutReason))
+        let scheduledTask = group.next().scheduleTask(in: .seconds(Int64(command.timeoutSeconds))) {
+            resultPromise.fail(SMTPError.connectionFailed("Response timeout"))
         }
 
         do {
@@ -276,13 +268,7 @@ public actor SMTPServer {
             buffer.writeBytes([0x0D, 0x0A]) // CRLF
             try await channel.writeAndFlush(buffer).get()
 
-            // `EventLoopFuture.get()` ignores task cancellation; fail the
-            // promise so a cancelled caller releases the channel at once.
-            let result = try await withTaskCancellationHandler {
-                try await resultPromise.futureResult.get()
-            } onCancel: {
-                resultPromise.fail(CancellationError())
-            }
+            let result = try await resultPromise.futureResult.get()
             scheduledTask.cancel()
             duplexLogger.flushInboundBuffer()
             return result
@@ -290,12 +276,7 @@ public actor SMTPServer {
             scheduledTask.cancel()
             // Ensure the promise is resolved to prevent NIO "leaking promise" fatal error
             resultPromise.fail(error)
-            if error is CancellationError {
-                // The reply is still in flight and would be read as the answer
-                // to the next command, so the session cannot be reused.
-                await closeAndClearChannel(holding: permit)
-                throw error
-            } else if error is SMTPError {
+            if error is SMTPError {
                 throw error
             } else {
                 throw SMTPError.connectionFailed("Command failed: \(error.localizedDescription)")
@@ -312,27 +293,6 @@ public actor SMTPServer {
         resultPromise: EventLoopPromise<CommandType.ResultType>
     ) -> CommandType.HandlerType {
         command.makeHandler(commandTag: commandTag, promise: resultPromise)
-    }
-
-    /// Close and clear the channel when the session can no longer be used: a
-    /// failed or cancelled connection step, a STARTTLS policy failure, or a
-    /// failed submission. A later ``connect()`` starts a fresh session.
-    func closeAndClearChannel(holding permit: SMTPOperationGate.Permit) async {
-        precondition(operationGate.isHeld(permit), "SMTP channel closed without owning it")
-        let channel = self.channel
-        self.channel = nil
-        self.isTLSEnabled = false
-        self.capabilities = []
-
-        guard let channel else {
-            return
-        }
-
-        do {
-            try await channel.close().get()
-        } catch {
-            logger.debug("Channel close after unusable session reported: \(error)")
-        }
     }
 
     /**

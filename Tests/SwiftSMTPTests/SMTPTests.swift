@@ -1293,11 +1293,12 @@ struct SMTPTests {
     }
 
     @Test
-    func testConnectionTimeoutDefaultsFollowRFCRecommendations() {
+    func testConnectionTimeoutDefaultsKeepTheFixedWaits() {
         let timeouts = SMTPConnectionTimeouts()
-        #expect(timeouts.greeting == 5 * 60)
-        #expect(timeouts.ehloResponse == 5 * 60)
-        #expect(timeouts.startTLSResponse == 2 * 60)
+        #expect(timeouts.greeting == 5)
+        #expect(timeouts.ehloResponse == 30)
+        #expect(timeouts.startTLSResponse == 10)
+        #expect(SMTPConnectionTimeouts.wholeSeconds(0.2) == 1)
     }
 
     /// Runs `body` against a client whose channel is a testing channel that
@@ -1306,11 +1307,7 @@ struct SMTPTests {
         connectionTimeouts: SMTPConnectionTimeouts,
         _ body: (SMTPServer, NIOAsyncTestingChannel) async throws -> Void
     ) async throws {
-        let client = SMTPServer(
-            host: "smtp.example.com",
-            port: 587,
-            connectionTimeouts: connectionTimeouts
-        )
+        let client = SMTPServer(host: "smtp.example.com", port: 587, connectionTimeouts: connectionTimeouts)
         let channel = NIOAsyncTestingChannel()
         try await channel.connect(to: SocketAddress(ipAddress: "127.0.0.1", port: 587))
         await client.replaceChannelForTesting(channel)
@@ -1320,10 +1317,9 @@ struct SMTPTests {
     }
 
     @Test
-    func testEHLOTimeoutNamesTheStep() async throws {
-        try await withSilentChannel(
-            connectionTimeouts: SMTPConnectionTimeouts(ehloResponse: 0.2)
-        ) { client, _ in
+    func testEHLOWaitsForItsConnectionTimeout() async throws {
+        try await withSilentChannel(connectionTimeouts: SMTPConnectionTimeouts(ehloResponse: 1)) { client, _ in
+            let start = Date()
             let error = await #expect(throws: SMTPError.self) {
                 try await client.fetchCapabilities()
             }
@@ -1331,42 +1327,24 @@ struct SMTPTests {
                 Issue.record("Expected connectionFailed, got \(String(describing: error))")
                 return
             }
-            #expect(reason == "EHLO timeout")
+            #expect(reason == "Response timeout")
+            #expect(Date().timeIntervalSince(start) < 10, "the 1-second budget, not the 30-second default")
         }
     }
 
     @Test
-    func testSTARTTLSTimeoutNamesTheStep() async throws {
-        try await withSilentChannel(
-            connectionTimeouts: SMTPConnectionTimeouts(startTLSResponse: 0.2)
-        ) { client, _ in
+    func testSTARTTLSWaitsForItsConnectionTimeout() async throws {
+        try await withSilentChannel(connectionTimeouts: SMTPConnectionTimeouts(startTLSResponse: 1)) { client, _ in
+            let start = Date()
             let error = await #expect(throws: SMTPError.self) {
-                try await client.applyPostEHLOTLSPolicy(
-                    transportMode: .startTLSRequired,
-                    capabilities: ["STARTTLS"]
-                )
+                try await client.applyPostEHLOTLSPolicy(transportMode: .startTLSRequired, capabilities: ["STARTTLS"])
             }
             guard case .tlsFailed(let reason)? = error else {
                 Issue.record("Expected tlsFailed, got \(String(describing: error))")
                 return
             }
-            #expect(reason.contains("STARTTLS timeout"))
-        }
-    }
-
-    @Test
-    func testCancellingEHLOWaitReleasesTheConnection() async throws {
-        try await withSilentChannel(connectionTimeouts: SMTPConnectionTimeouts()) { client, channel in
-            let task = Task { try await client.fetchCapabilities() }
-            // Cancel only once EHLO is on the wire, so the reply wait is what gets cancelled.
-            while try await channel.readOutbound(as: ByteBuffer.self) == nil {
-                try await Task.sleep(nanoseconds: 5_000_000)
-            }
-            task.cancel()
-            await #expect(throws: CancellationError.self) {
-                try await task.value
-            }
-            #expect(await !client.hasChannelForTesting)
+            #expect(reason.contains("Response timeout"))
+            #expect(Date().timeIntervalSince(start) < 8, "the 1-second budget, not the 10-second default")
         }
     }
 
@@ -1465,31 +1443,35 @@ struct SMTPTests {
                 return
             }
             #expect(reason == "Greeting timeout")
+            try? await client.disconnect()
         }
     }
 
+    /// A greeting later than the old fixed wait, but inside the budget, connects.
     @Test
-    func testCancellingGreetingWaitReleasesTheConnection() async throws {
+    func testALateGreetingInsideTheBudgetConnects() async throws {
         var script = SMTPServerScript()
-        script.greeting = .silence
+        script.greeting = .delayedReply("220 smtp.test ESMTP slow", delay: 0.6)
         let testServer = SMTPTestServer(script: script)
         try testServer.start()
         try await testServer.run {
-            let client = SMTPServer(
+            let late = SMTPServer(
                 host: "127.0.0.1",
                 port: testServer.port,
-                transportSecurity: .plainText
+                transportSecurity: .plainText,
+                connectionTimeouts: SMTPConnectionTimeouts(greeting: 0.3)
             )
-            let task = Task { try await client.connect() }
-            // The channel is stored once TCP connects, before the greeting wait.
-            while await !client.hasChannelForTesting {
-                try await Task.sleep(nanoseconds: 5_000_000)
-            }
-            task.cancel()
-            await #expect(throws: CancellationError.self) {
-                try await task.value
-            }
-            #expect(await !client.hasChannelForTesting)
+            await #expect(throws: SMTPError.self) { try await late.connect() }
+            try? await late.disconnect()
+
+            let patient = SMTPServer(
+                host: "127.0.0.1",
+                port: testServer.port,
+                transportSecurity: .plainText,
+                connectionTimeouts: SMTPConnectionTimeouts(greeting: 3)
+            )
+            try await patient.connect()
+            try await patient.disconnect()
         }
     }
 

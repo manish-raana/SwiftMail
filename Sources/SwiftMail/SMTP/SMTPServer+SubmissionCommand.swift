@@ -252,8 +252,6 @@ extension SMTPServer {
         }
     }
 
-    /// Convert a timeout budget in seconds to a NIO time amount, rounding up so
-    /// a fractional budget never expires early.
     static func nioTimeAmount(seconds: TimeInterval) -> TimeAmount {
         let nanoseconds = seconds * 1_000_000_000
         return .nanoseconds(Int64(nanoseconds.rounded(.up)))

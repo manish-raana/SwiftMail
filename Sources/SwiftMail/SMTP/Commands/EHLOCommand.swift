@@ -11,16 +11,19 @@ struct EHLOCommand: SMTPCommand {
     /// The handler type that will process responses for this command
     typealias HandlerType = EHLOHandler
 
-    /// Fallback timeout in seconds; `SMTPServer` waits for `SMTPConnectionTimeouts.ehloResponse` instead
-    let timeoutSeconds: Int = 30
+    /// Timeout in seconds for EHLO command; `SMTPServer` passes `SMTPConnectionTimeouts.ehloResponse`
+    let timeoutSeconds: Int
 
     /// The client identity to use for the EHLO command
     let clientIdentity: String
 
     /// Initialize a new EHLO command
-    /// - Parameter clientIdentity: The RFC 5321 domain or address literal to use for the EHLO command
-    init(clientIdentity: String) {
+    /// - Parameters:
+    ///   - clientIdentity: The RFC 5321 domain or address literal to use for the EHLO command
+    ///   - timeoutSeconds: How long to wait for the reply
+    init(clientIdentity: String, timeoutSeconds: Int = 30) {
         self.clientIdentity = clientIdentity
+        self.timeoutSeconds = timeoutSeconds
     }
 
     /// Convert the command to a string that can be sent to the server
